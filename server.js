@@ -166,12 +166,16 @@ function normalizeAvailability(data) {
   return windows;
 }
 
+function formatZuperDate(value) {
+  return new Date(value).toISOString().slice(0, 19).replace('T', ' ');
+}
+
 async function availableSlots(jobUid) {
   const now = new Date();
   const to = new Date(now.getTime() + (7 * 86400000));
   const params = new URLSearchParams({
-    from_date: now.toISOString(),
-    to_date: to.toISOString(),
+    from_date: formatZuperDate(now),
+    to_date: formatZuperDate(to),
     job_uid: jobUid,
     job_duration: String(SLOT_MINUTES),
     timezone: TIME_ZONE,
