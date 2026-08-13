@@ -57,6 +57,10 @@ function publicBaseUrl() {
   return String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 }
 
+function asyncHandler(handler) {
+  return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+}
+
 function signId(id) {
   const signature = crypto
     .createHmac('sha256', required('BOOKING_TOKEN_SECRET'))
@@ -398,7 +402,7 @@ async function hostUpload(file, leadId = null, fieldName = 'attachment') {
     ].join(' '),
     [token, leadId, fieldName, file.originalname, file.mimetype, file.size, file.buffer]
   );
-  return publicBaseUrl() + '/uploads/' + token;
+  return publicBaseUrl() + '/uploads/' + token + '/' + encodeURIComponent(file.originalname);
 }
 
 async function attachFilesToZuper(jobUid, hostedFiles) {
@@ -689,7 +693,7 @@ app.post('/book/:token/cancel', async (req, res) => {
   res.send(layout('Appointment cancelled', '<section><h1>Your appointment has been cancelled.</h1><a class="button" href="/book/' + htmlEscape(req.params.token) + '">Schedule another time</a></section>'));
 });
 
-app.get('/uploads/:token', async (req, res) => {
+app.get(['/uploads/:token', '/uploads/:token/:fileName'], asyncHandler(async (req, res) => {
   const result = await pool.query(
     'SELECT file_name, content_type, file_size, file_data FROM virtual_consultation_uploads WHERE token = $1',
     [req.params.token]
@@ -703,7 +707,7 @@ app.get('/uploads/:token', async (req, res) => {
     'Cache-Control': 'private, max-age=3600'
   });
   res.send(uploadRecord.file_data);
-});
+}));
 
 app.get('/checklist/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
@@ -724,7 +728,7 @@ app.get('/checklist/:token', async (req, res) => {
   ].join('')));
 });
 
-app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, maxCount: 1 }))), async (req, res) => {
+app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, maxCount: 1 }))), asyncHandler(async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This checklist link is unavailable.</h1></section>'));
   const files = PHOTO_FIELDS.map(name => req.files?.[name]?.[0]).filter(Boolean);
@@ -758,7 +762,7 @@ app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, ma
     [req.body.homeAddress, lead.id]
   );
   res.send(layout('Checklist received', '<section><h1>Thank you—your checklist was sent to Brandon.</h1><p>He will review everything before your consultation.</p></section>'));
-});
+}));
 
 mountTestConsole(app, {
   pool,
