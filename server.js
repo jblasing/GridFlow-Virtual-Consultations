@@ -100,6 +100,16 @@ async function ensureSchema() {
     ' setting_key TEXT PRIMARY KEY,',
     ' setting_value TEXT NOT NULL,',
     ' updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()',
+    ');',
+    'CREATE TABLE IF NOT EXISTS virtual_consultation_uploads (',
+    ' token TEXT PRIMARY KEY,',
+    ' lead_id BIGINT REFERENCES virtual_consultation_leads(id) ON DELETE CASCADE,',
+    ' field_name TEXT NOT NULL,',
+    ' file_name TEXT NOT NULL,',
+    ' content_type TEXT NOT NULL,',
+    ' file_size INTEGER NOT NULL,',
+    ' file_data BYTEA NOT NULL,',
+    ' created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()',
     ');'
   ].join(' '));
 }
@@ -378,21 +388,44 @@ async function addZuperNote(jobUid, note) {
   }
 }
 
-async function attachToZuper(jobUid, file) {
-  try {
-    await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid) + '/attachments', {
-      method: 'POST',
-      body: JSON.stringify({
-        attachment: {
-          attachment_name: file.originalname,
-          attachment_type: file.mimetype,
-          attachment_data: file.buffer.toString('base64')
-        }
-      })
-    });
-  } catch (error) {
-    console.warn('Zuper attachment warning:', error.message);
+async function hostUpload(file, leadId = null, fieldName = 'attachment') {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await pool.query(
+    [
+      'INSERT INTO virtual_consultation_uploads',
+      '(token, lead_id, field_name, file_name, content_type, file_size, file_data)',
+      'VALUES ($1, $2, $3, $4, $5, $6, $7)'
+    ].join(' '),
+    [token, leadId, fieldName, file.originalname, file.mimetype, file.size, file.buffer]
+  );
+  return publicBaseUrl() + '/uploads/' + token;
+}
+
+async function attachFilesToZuper(jobUid, hostedFiles) {
+  if (!hostedFiles.length || hostedFiles.some(item => !item.url)) {
+    throw new Error('A hosted URL is required for every attachment.');
   }
+  const result = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid) + '/attachments', {
+    method: 'POST',
+    body: JSON.stringify({
+      attachments: hostedFiles.map(({ file, url }) => ({
+        file_name: file.originalname,
+        url,
+        file_size: file.size,
+        visible_to_customer: false
+      }))
+    })
+  });
+  const attachmentUids = result?.data?.attachment_uids;
+  if (!Array.isArray(attachmentUids) || attachmentUids.length !== hostedFiles.length) {
+    throw new Error('Zuper did not confirm every job attachment.');
+  }
+  return attachmentUids;
+}
+
+async function attachToZuper(jobUid, file, url) {
+  const attachmentUids = await attachFilesToZuper(jobUid, [{ file, url }]);
+  return attachmentUids[0];
 }
 
 async function graphToken() {
@@ -656,6 +689,22 @@ app.post('/book/:token/cancel', async (req, res) => {
   res.send(layout('Appointment cancelled', '<section><h1>Your appointment has been cancelled.</h1><a class="button" href="/book/' + htmlEscape(req.params.token) + '">Schedule another time</a></section>'));
 });
 
+app.get('/uploads/:token', async (req, res) => {
+  const result = await pool.query(
+    'SELECT file_name, content_type, file_size, file_data FROM virtual_consultation_uploads WHERE token = $1',
+    [req.params.token]
+  );
+  const uploadRecord = result.rows[0];
+  if (!uploadRecord) return res.status(404).send('Not found');
+  res.set({
+    'Content-Type': uploadRecord.content_type,
+    'Content-Length': String(uploadRecord.file_size),
+    'Content-Disposition': 'inline; filename="' + String(uploadRecord.file_name).replace(/["\r\n]/g, '') + '"',
+    'Cache-Control': 'private, max-age=3600'
+  });
+  res.send(uploadRecord.file_data);
+});
+
 app.get('/checklist/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This checklist link is unavailable.</h1></section>'));
@@ -690,7 +739,11 @@ app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, ma
     'Available gas: ' + req.body.gasType,
     'Photos attached: main breaker panel, electric meter, gas/propane source, location detail, wide location.'
   ].join('\n');
-  await Promise.all(files.map(file => attachToZuper(lead.job_uid, file)));
+  const hostedFiles = await Promise.all(files.map(async file => ({
+    file,
+    url: await hostUpload(file, lead.id, file.fieldname)
+  })));
+  await attachFilesToZuper(lead.job_uid, hostedFiles);
   await Promise.allSettled([
     addZuperNote(lead.job_uid, summary),
     sendEmail({
@@ -718,6 +771,7 @@ mountTestConsole(app, {
   assignAndSchedule,
   addZuperNote,
   attachToZuper,
+  hostUpload,
   brandonEmail: BRANDON_EMAIL,
   testUpload: upload,
   sendTestInvitation: lead => createInvitation(lead, { email: true, sms: false })
