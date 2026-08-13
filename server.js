@@ -287,29 +287,22 @@ async function assignAndSchedule(jobUid, start, end) {
   if (!currentJob?.job_title || !categoryUid) {
     throw new Error('Zuper did not return the job title and category required for rescheduling.');
   }
-  const baseJob = {
-    job_uid: jobUid,
-    job_title: currentJob.job_title,
-    job_category: categoryUid
-  };
   const originalWindow = scheduledWindows(currentJob)[0];
+  const appointmentUid = currentJob?.appointment?.appointment_uid
+    || currentJob?.appointments?.[0]?.appointment_uid;
 
   try {
-    // Zuper will preserve an existing dispatch window unless it is explicitly
-    // cleared before a replacement schedule is submitted.
-    await zuperRequest('/api/jobs?clear_schedule=true', {
-      method: 'PUT',
-      body: JSON.stringify({ job: baseJob })
-    });
-    await zuperRequest('/api/jobs', {
+    await zuperRequest('/api/jobs/schedule', {
       method: 'PUT',
       body: JSON.stringify({
-        job: {
-          ...baseJob,
-          scheduled_start_time: formatZuperDate(start),
-          scheduled_end_time: formatZuperDate(end),
-          job_timezone: TIME_ZONE
-        }
+        job_uid: jobUid,
+        from_date: formatZuperDate(start),
+        to_date: formatZuperDate(end),
+        remove_from_route: true,
+        reason: 'Virtual generator estimate scheduled by customer',
+        work_mins_required: SLOT_MINUTES,
+        job_timezone: TIME_ZONE,
+        ...(appointmentUid ? { appointment_uid: appointmentUid } : {})
       })
     });
     await zuperRequest('/api/jobs/assign', {
@@ -343,15 +336,20 @@ async function assignAndSchedule(jobUid, start, end) {
   } catch (error) {
     if (originalWindow) {
       try {
-        await zuperRequest('/api/jobs', {
+        const originalMinutes = Math.max(1, Math.round(
+          (new Date(originalWindow.end).getTime() - new Date(originalWindow.start).getTime()) / 60000
+        ));
+        await zuperRequest('/api/jobs/schedule', {
           method: 'PUT',
           body: JSON.stringify({
-            job: {
-              ...baseJob,
-              scheduled_start_time: formatZuperDate(originalWindow.start),
-              scheduled_end_time: formatZuperDate(originalWindow.end),
-              job_timezone: TIME_ZONE
-            }
+            job_uid: jobUid,
+            from_date: formatZuperDate(originalWindow.start),
+            to_date: formatZuperDate(originalWindow.end),
+            remove_from_route: false,
+            reason: 'Restoring original schedule after virtual booking failure',
+            work_mins_required: originalMinutes,
+            job_timezone: TIME_ZONE,
+            ...(appointmentUid ? { appointment_uid: appointmentUid } : {})
           })
         });
         console.warn('Restored original Zuper schedule after booking failure:', jobUid);
