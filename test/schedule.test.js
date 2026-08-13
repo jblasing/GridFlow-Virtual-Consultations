@@ -34,6 +34,8 @@ test('creates slots inside weekday hours with one hour notice', () => {
   assert.equal(slots[0].start, '2026-08-17T14:00:00.000Z');
   assert.equal(new Date(slots[0].end) - new Date(slots[0].start), 45 * 60000);
   assert.equal(new Date(slots[0].bufferedEnd) - new Date(slots[0].start), 65 * 60000);
+  assert.ok(slots.every(slot => new Date(slot.start).getUTCMinutes() === 0));
+  assert.ok(slots.slice(1).every((slot, index) => new Date(slot.start) - new Date(slots[index].start) >= 120 * 60000));
 });
 
 test('removes slots that conflict with an existing booking plus buffer', () => {
