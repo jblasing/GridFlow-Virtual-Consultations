@@ -2,9 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildBookableSlots, hoursFor, SLOT_MINUTES, BUFFER_MINUTES } = require('../lib/schedule');
 
-test('uses 45 minute appointments and 20 minute buffers', () => {
+test('uses 45 minute appointments and 15 minute buffers', () => {
   assert.equal(SLOT_MINUTES, 45);
-  assert.equal(BUFFER_MINUTES, 20);
+  assert.equal(BUFFER_MINUTES, 15);
 });
 
 test('Sunday is disabled by default and can be enabled for events', () => {
@@ -21,7 +21,7 @@ test('Sunday is disabled by default and can be enabled for events', () => {
   );
 });
 
-test('creates slots inside weekday hours with one hour notice', () => {
+test('creates hourly slots inside weekday hours with one hour notice', () => {
   const slots = buildBookableSlots({
     now: new Date('2026-08-17T13:00:00Z'),
     assistedSlots: [{
@@ -33,9 +33,9 @@ test('creates slots inside weekday hours with one hour notice', () => {
   assert.ok(slots.length > 0);
   assert.equal(slots[0].start, '2026-08-17T14:00:00.000Z');
   assert.equal(new Date(slots[0].end) - new Date(slots[0].start), 45 * 60000);
-  assert.equal(new Date(slots[0].bufferedEnd) - new Date(slots[0].start), 65 * 60000);
+  assert.equal(new Date(slots[0].bufferedEnd) - new Date(slots[0].start), 60 * 60000);
   assert.ok(slots.every(slot => new Date(slot.start).getUTCMinutes() === 0));
-  assert.ok(slots.slice(1).every((slot, index) => new Date(slot.start) - new Date(slots[index].start) >= 120 * 60000));
+  assert.ok(slots.slice(1).every((slot, index) => new Date(slot.start) - new Date(slots[index].start) === 60 * 60000));
 });
 
 test('removes slots that conflict with an existing booking plus buffer', () => {
@@ -47,9 +47,10 @@ test('removes slots that conflict with an existing booking plus buffer', () => {
     }],
     busyBookings: [{
       start: '2026-08-17T15:05:00Z',
-      bufferedEnd: '2026-08-17T16:10:00Z'
+      bufferedEnd: '2026-08-17T16:05:00Z'
     }],
     timeZone: 'America/Chicago'
   });
-  assert.equal(slots.some(slot => slot.start === '2026-08-17T15:05:00.000Z'), false);
+  assert.equal(slots.some(slot => slot.start === '2026-08-17T15:00:00.000Z'), false);
+  assert.equal(slots.some(slot => slot.start === '2026-08-17T16:00:00.000Z'), false);
 });
