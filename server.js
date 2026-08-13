@@ -192,7 +192,12 @@ function verifyZuperBooking(response, expectedStart, expectedEnd) {
   }
   if (!sameInstant(job.scheduled_start_time, expectedStart) ||
       !sameInstant(job.scheduled_end_time, expectedEnd)) {
-    throw new Error('Zuper did not confirm the requested appointment time.');
+    throw new Error('Zuper did not confirm the requested appointment time. ' + JSON.stringify({
+      actual_start: job.scheduled_start_time || null,
+      actual_end: job.scheduled_end_time || null,
+      expected_start: expectedStart,
+      expected_end: expectedEnd
+    }));
   }
 }
 
@@ -288,8 +293,8 @@ async function assignAndSchedule(jobUid, start, end) {
         job_uid: jobUid,
         job_title: currentJob.job_title,
         job_category: categoryUid,
-        scheduled_start_time: new Date(start).toISOString(),
-        scheduled_end_time: new Date(end).toISOString(),
+        scheduled_start_time: formatZuperDate(start),
+        scheduled_end_time: formatZuperDate(end),
         job_timezone: TIME_ZONE
       }
     })
