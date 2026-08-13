@@ -60,3 +60,8 @@ Copy `.env.example` into Render environment variables. Secrets must never be com
 ```
 
 Send the shared CRM secret in the `x-gridflow-secret` header.
+
+
+## Protected integration testing
+
+Open `/admin/tests?secret=ADMIN_SECRET` to test configuration, Microsoft Graph authentication, email, SMS, Zuper availability, checklist delivery, and assignment/scheduling independently. Tests that modify Zuper require an explicit test job UID and confirmation. Test outcomes are recorded in `virtual_consultation_test_runs`. Do not use a live customer job for destructive integration tests.
