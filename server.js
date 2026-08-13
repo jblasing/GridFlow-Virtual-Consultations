@@ -374,13 +374,11 @@ app.get('/health', async (_req, res) => {
   res.json({ status: 'ok', scheduling: true, checklist: true });
 });
 
-app.post('/api/invitations', async (req, res) => {
-  if (req.headers['x-gridflow-secret'] !== process.env.INTEGRATION_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const lead = req.body || {};
+async function createInvitation(lead, channels = { email: true, sms: true }) {
   if (!lead.job_uid || !lead.customer_name) {
-    return res.status(400).json({ error: 'job_uid and customer_name are required' });
+    const error = new Error('job_uid and customer_name are required');
+    error.statusCode = 400;
+    throw error;
   }
   const result = await pool.query(
     [
@@ -402,20 +400,33 @@ app.post('/api/invitations', async (req, res) => {
     ]
   );
   const stored = result.rows[0];
-  const token = signId(stored.id);
-  const link = publicBaseUrl() + '/book/' + token;
-  await Promise.allSettled([
-    sendEmail({
-      to: stored.customer_email,
-      subject: 'Schedule your virtual whole-home generator consultation',
-      html: invitationHtml(stored.customer_name, link)
-    }),
-    sendSms(
-      stored.customer_phone,
-      'Collaborative Services: Schedule your virtual whole-home generator consultation with Brandon: ' + link
-    )
-  ]);
-  res.status(201).json({ success: true, booking_url: link });
+  const bookingUrl = publicBaseUrl() + '/book/' + signId(stored.id);
+  const deliveries = [];
+  if (channels.email) deliveries.push(sendEmail({
+    to: stored.customer_email,
+    subject: 'Schedule your virtual whole-home generator consultation',
+    html: invitationHtml(stored.customer_name, bookingUrl)
+  }));
+  if (channels.sms) deliveries.push(sendSms(
+    stored.customer_phone,
+    'Collaborative Services: Schedule your virtual whole-home generator consultation with Brandon: ' + bookingUrl
+  ));
+  const outcomes = await Promise.allSettled(deliveries);
+  const failed = outcomes.find(item => item.status === 'rejected');
+  if (failed) throw failed.reason;
+  return { stored, bookingUrl };
+}
+
+app.post('/api/invitations', async (req, res) => {
+  if (req.headers['x-gridflow-secret'] !== process.env.INTEGRATION_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const created = await createInvitation(req.body || {});
+    res.status(201).json({ success: true, booking_url: created.bookingUrl });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
 });
 
 app.get('/book/:token', async (req, res) => {
@@ -558,7 +569,8 @@ mountTestConsole(app, {
   addZuperNote,
   attachToZuper,
   brandonEmail: BRANDON_EMAIL,
-  testUpload: upload
+  testUpload: upload,
+  sendTestInvitation: lead => createInvitation(lead, { email: true, sms: false })
 });
 
 app.get('/admin/sunday', async (req, res) => {
