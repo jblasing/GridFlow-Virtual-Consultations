@@ -424,12 +424,26 @@ async function attachFilesToZuper(jobUid, hostedFiles) {
   if (!Array.isArray(attachmentUids) || attachmentUids.length !== hostedFiles.length) {
     throw new Error('Zuper did not confirm every job attachment.');
   }
-  return attachmentUids;
+  let confirmed = false;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 1000));
+    const response = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
+    const job = response?.data || response?.job || response;
+    const actualUids = (job?.attachments || []).map(item => item?.attachment_uid).filter(Boolean);
+    confirmed = attachmentUids.every(uid => actualUids.includes(uid));
+    if (confirmed) break;
+  }
+  console.info('Zuper checklist attachments:', JSON.stringify({
+    job_uid: jobUid,
+    attachment_uids: attachmentUids,
+    visible_in_job_details: confirmed
+  }));
+  return { attachmentUids, confirmed };
 }
 
 async function attachToZuper(jobUid, file, url) {
-  const attachmentUids = await attachFilesToZuper(jobUid, [{ file, url }]);
-  return attachmentUids[0];
+  const result = await attachFilesToZuper(jobUid, [{ file, url }]);
+  return result.attachmentUids[0];
 }
 
 async function graphToken() {
@@ -735,19 +749,32 @@ app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, ma
   if (files.length !== PHOTO_FIELDS.length) {
     return res.status(400).send(layout('Photos required', '<section><h1>Please include all five requested photos.</h1></section>'));
   }
+  const hostedFiles = await Promise.all(files.map(async file => ({
+    file,
+    url: await hostUpload(file, lead.id, file.fieldname)
+  })));
+  const attachmentResult = await attachFilesToZuper(lead.job_uid, hostedFiles);
+  const photoLabels = {
+    breakerPanel: 'Main breaker panel',
+    electricMeter: 'Electric meter',
+    fuelSource: 'Gas meter / propane tanks',
+    locationDetail: 'Generator location detail',
+    locationWide: 'Generator location wide view'
+  };
   const summary = [
     'Pre-virtual consultation checklist',
     'Customer: ' + lead.customer_name,
     'Home address: ' + req.body.homeAddress,
     'House square footage: ' + req.body.squareFootage,
     'Available gas: ' + req.body.gasType,
-    'Photos attached: main breaker panel, electric meter, gas/propane source, location detail, wide location.'
+    'Photos attached: main breaker panel, electric meter, gas/propane source, location detail, wide location.',
+    attachmentResult.confirmed
+      ? 'Gallery upload confirmed by Zuper.'
+      : 'Zuper accepted the attachments, but Gallery indexing was not yet confirmed.',
+    '',
+    'Secure photo links:',
+    ...hostedFiles.map(({ file, url }) => (photoLabels[file.fieldname] || file.originalname) + ': ' + url)
   ].join('\n');
-  const hostedFiles = await Promise.all(files.map(async file => ({
-    file,
-    url: await hostUpload(file, lead.id, file.fieldname)
-  })));
-  await attachFilesToZuper(lead.job_uid, hostedFiles);
   await Promise.allSettled([
     addZuperNote(lead.job_uid, summary),
     sendEmail({
