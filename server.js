@@ -179,7 +179,9 @@ function sameInstant(actual, expected) {
 
 function assignedUserUids(job) {
   return (job?.assigned_to || [])
-    .map(user => typeof user === 'string' ? user : user?.user_uid)
+    .map(assignment => typeof assignment === 'string'
+      ? assignment
+      : assignment?.user_uid || assignment?.user?.user_uid)
     .filter(Boolean);
 }
 
@@ -282,8 +284,19 @@ async function assignAndSchedule(jobUid, start, end) {
       }
     })
   });
-  const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
-  verifyZuperBooking(updated, start, end);
+  let verificationError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 500));
+    const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
+    try {
+      verifyZuperBooking(updated, start, end);
+      verificationError = null;
+      break;
+    } catch (error) {
+      verificationError = error;
+    }
+  }
+  if (verificationError) throw verificationError;
   console.info('Zuper virtual consultation scheduled:', JSON.stringify({
     job_uid: jobUid,
     user_uid: BRANDON_USER_UID,
@@ -530,7 +543,15 @@ app.post('/book/:token', async (req, res) => {
   if (!selected) {
     return res.status(409).send(layout('Time unavailable', '<section><h1>That appointment is no longer available.</h1><p>Please return to the booking page and choose another time.</p></section>'));
   }
-  await assignAndSchedule(lead.job_uid, selected.start, selected.end);
+  try {
+    await assignAndSchedule(lead.job_uid, selected.start, selected.end);
+  } catch (error) {
+    console.error('Zuper booking update failed:', error);
+    return res.status(502).send(layout(
+      'Appointment not completed',
+      '<section><h1>We could not complete this appointment.</h1><p>The selected time was not reserved. Please return to the scheduling page and try again, or call (936) 228-2916.</p><a class="button" href="/book/' + htmlEscape(req.params.token) + '">Choose another time</a></section>'
+    ));
+  }
   await pool.query(
     [
       'UPDATE virtual_consultation_leads SET booking_status = \'booked\',',
