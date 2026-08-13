@@ -1,0 +1,20 @@
+{
+  "name": "gridflow-virtual-consultations",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Customer scheduling and pre-consultation intake for whole-home generator leads",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check lib/schedule.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.2",
+    "pg": "^8.16.3"
+  }
+}
