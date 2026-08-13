@@ -10,6 +10,8 @@ test('invitation email includes the private scheduling link and fallback URL', (
   assert.match(html, /45-minute virtual generator estimate/);
   assert.match(html, /reschedule or cancel/);
   assert.ok(html.includes(LOGO_URL));
+  assert.match(html, /We will review your home/);
+  assert.doesNotMatch(html, /â|€™|�/);
 });
 
 test('invitation email escapes customer names and URLs', () => {
