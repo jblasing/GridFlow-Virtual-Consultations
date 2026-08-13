@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const { buildBookableSlots, SLOT_MINUTES, BUFFER_MINUTES } = require('./lib/schedule');
 const { mountTestConsole } = require('./lib/test-console');
 const { invitationHtml, LOGO_URL } = require('./lib/email-templates');
+const { formatLocalDate, normalizeEmployeeConflicts } = require('./lib/zuper-schedule');
 
 const app = express();
 const pool = new Pool({
@@ -173,17 +174,41 @@ function formatZuperDate(value) {
 async function availableSlots(jobUid) {
   const now = new Date();
   const to = new Date(now.getTime() + (7 * 86400000));
-  const params = new URLSearchParams({
-    from_date: formatZuperDate(now),
-    to_date: formatZuperDate(to),
-    job_uid: jobUid,
-    job_duration: String(SLOT_MINUTES),
-    timezone: TIME_ZONE,
-    team_uid: BRANDON_TEAM_UID,
-    user_uid: BRANDON_USER_UID,
-    consider_holidays: 'true'
-  });
-  const assisted = await zuperRequest('/api/assisted_scheduling?' + params.toString());
+  let assistedSlots;
+  let zuperConflicts = [];
+
+  try {
+    const params = new URLSearchParams({
+      'filter.team_uid': BRANDON_TEAM_UID,
+      from_date: formatLocalDate(now, TIME_ZONE),
+      to_date: formatLocalDate(to, TIME_ZONE),
+      timezone: TIME_ZONE
+    });
+    const employeeSchedule = await zuperRequest('/api/jobs/employee/schedule?' + params.toString());
+    const users = employeeSchedule?.data?.users;
+    if (!Array.isArray(users) || !users.some(user => user?.user_uid === BRANDON_USER_UID)) {
+      throw new Error('Brandon was not returned by the employee schedule.');
+    }
+
+    // The storefront owns the approved business hours. Zuper supplies Brandon's
+    // scheduled jobs and time off, which are removed as conflicts below.
+    assistedSlots = [{ start: now.toISOString(), end: to.toISOString() }];
+    zuperConflicts = normalizeEmployeeConflicts(employeeSchedule, BRANDON_USER_UID);
+  } catch (error) {
+    console.warn('Employee schedule unavailable; using assisted scheduling fallback:', error.message);
+    const params = new URLSearchParams({
+      from_date: formatZuperDate(now),
+      to_date: formatZuperDate(to),
+      job_duration: String(SLOT_MINUTES),
+      timezone: TIME_ZONE,
+      team_uid: BRANDON_TEAM_UID,
+      user_uid: BRANDON_USER_UID,
+      consider_holidays: 'true'
+    });
+    const assisted = await zuperRequest('/api/assisted_scheduling?' + params.toString());
+    assistedSlots = normalizeAvailability(assisted);
+  }
+
   const busy = await pool.query(
     [
       'SELECT scheduled_start AS start,',
@@ -197,8 +222,8 @@ async function availableSlots(jobUid) {
   const sundayEnabled = (await setting('sunday_enabled', 'false')) === 'true';
   return buildBookableSlots({
     now,
-    assistedSlots: normalizeAvailability(assisted),
-    busyBookings: busy.rows,
+    assistedSlots,
+    busyBookings: [...zuperConflicts, ...busy.rows],
     timeZone: TIME_ZONE,
     sundayEnabled,
     sundayStart: await setting('sunday_start', '10:00'),
