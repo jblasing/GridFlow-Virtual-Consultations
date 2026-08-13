@@ -185,16 +185,31 @@ function assignedUserUids(job) {
     .filter(Boolean);
 }
 
+function scheduledWindows(job) {
+  const appointments = [
+    job?.appointment,
+    ...(Array.isArray(job?.appointments) ? job.appointments : [])
+  ].filter(Boolean);
+  return [
+    { start: job?.scheduled_start_time, end: job?.scheduled_end_time },
+    ...appointments.map(appointment => ({
+      start: appointment?.scheduled_start_time,
+      end: appointment?.scheduled_end_time
+    }))
+  ].filter(window => window.start && window.end);
+}
+
 function verifyZuperBooking(response, expectedStart, expectedEnd) {
   const job = response?.data || response?.job || response;
   if (!job || !assignedUserUids(job).includes(BRANDON_USER_UID)) {
     throw new Error('Zuper did not confirm Brandon as an assigned user.');
   }
-  if (!sameInstant(job.scheduled_start_time, expectedStart) ||
-      !sameInstant(job.scheduled_end_time, expectedEnd)) {
+  const windows = scheduledWindows(job);
+  if (!windows.some(window =>
+    sameInstant(window.start, expectedStart) && sameInstant(window.end, expectedEnd)
+  )) {
     throw new Error('Zuper did not confirm the requested appointment time. ' + JSON.stringify({
-      actual_start: job.scheduled_start_time || null,
-      actual_end: job.scheduled_end_time || null,
+      actual_windows: windows,
       expected_start: expectedStart,
       expected_end: expectedEnd
     }));
@@ -295,7 +310,17 @@ async function assignAndSchedule(jobUid, start, end) {
         job_category: categoryUid,
         scheduled_start_time: formatZuperDate(start),
         scheduled_end_time: formatZuperDate(end),
-        job_timezone: TIME_ZONE
+        job_timezone: TIME_ZONE,
+        appointment: {
+          appointment_title: 'Virtual Generator Estimate',
+          scheduled_start_time: formatZuperDate(start),
+          scheduled_end_time: formatZuperDate(end),
+          users: [{
+            user_uid: BRANDON_USER_UID,
+            team_uid: BRANDON_TEAM_UID
+          }],
+          description: '45-minute virtual generator estimate'
+        }
       }
     })
   });
