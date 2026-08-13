@@ -176,7 +176,8 @@ async function availableSlots(jobUid) {
   const params = new URLSearchParams({
     from_date: formatZuperDate(now),
     to_date: formatZuperDate(to),
-    job_uid: jobUid,
+    // Do not include job_uid here. The existing Generator Sales Lead category is
+    // two hours long and would override the virtual estimate's requested length.
     job_duration: String(SLOT_MINUTES),
     timezone: TIME_ZONE,
     team_uid: BRANDON_TEAM_UID,
