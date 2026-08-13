@@ -4,6 +4,7 @@ const multer = require('multer');
 const { Pool } = require('pg');
 const { buildBookableSlots, SLOT_MINUTES, BUFFER_MINUTES } = require('./lib/schedule');
 const { mountTestConsole } = require('./lib/test-console');
+const { invitationHtml } = require('./lib/email-templates');
 
 const app = express();
 const pool = new Pool({
@@ -351,23 +352,6 @@ function layout(title, body) {
     '<main>', body, '</main>',
     '<footer>Collaborative Services · (936) 228-2916</footer>',
     '</body></html>'
-  ].join('');
-}
-
-function invitationHtml(name, link) {
-  return [
-    '<div style="font-family:Arial,sans-serif;color:#17202a;max-width:620px;margin:auto">',
-    '<div style="background:#f4511e;color:white;padding:24px;border-radius:14px 14px 0 0">',
-    '<h1 style="margin:0">Plan your whole-home generator</h1></div>',
-    '<div style="padding:28px;border:1px solid #ddd;border-top:0">',
-    '<p>Hi ', htmlEscape(name || 'there'), ',</p>',
-    '<p>Schedule a 45-minute virtual consultation with Brandon Whisnant. ',
-    'He will review your home, power needs, fuel options, and installation area.</p>',
-    '<p><a href="', htmlEscape(link), '" style="display:inline-block;background:#f4511e;',
-    'color:white;padding:14px 22px;text-decoration:none;border-radius:8px;font-weight:bold">',
-    'Schedule Virtual Consultation</a></p>',
-    '<p>Appointments are available within the next seven days. ',
-    'You can reschedule or cancel from the same private link.</p></div></div>'
   ].join('');
 }
 
