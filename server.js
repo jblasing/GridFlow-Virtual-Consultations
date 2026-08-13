@@ -259,6 +259,14 @@ async function availableSlots() {
 }
 
 async function assignAndSchedule(jobUid, start, end) {
+  const currentResponse = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
+  const currentJob = currentResponse?.data || currentResponse?.job || currentResponse;
+  const categoryUid = typeof currentJob?.job_category === 'string'
+    ? currentJob.job_category
+    : currentJob?.job_category?.category_uid;
+  if (!currentJob?.job_title || !categoryUid) {
+    throw new Error('Zuper did not return the job title and category required for rescheduling.');
+  }
   await zuperRequest('/api/jobs/assign', {
     method: 'POST',
     body: JSON.stringify({
@@ -278,8 +286,10 @@ async function assignAndSchedule(jobUid, start, end) {
     body: JSON.stringify({
       job: {
         job_uid: jobUid,
-        scheduled_start_time: formatZuperDate(start),
-        scheduled_end_time: formatZuperDate(end),
+        job_title: currentJob.job_title,
+        job_category: categoryUid,
+        scheduled_start_time: new Date(start).toISOString(),
+        scheduled_end_time: new Date(end).toISOString(),
         job_timezone: TIME_ZONE
       }
     })
