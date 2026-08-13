@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const { Pool } = require('pg');
 const { buildBookableSlots, SLOT_MINUTES, BUFFER_MINUTES } = require('./lib/schedule');
+const { mountTestConsole } = require('./lib/test-console');
 
 const app = express();
 const pool = new Pool({
@@ -555,6 +556,21 @@ app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, ma
     [req.body.homeAddress, lead.id]
   );
   res.send(layout('Checklist received', '<section><h1>Thank you—your checklist was sent to Brandon.</h1><p>He will review everything before your consultation.</p></section>'));
+});
+
+mountTestConsole(app, {
+  pool,
+  layout,
+  graphToken,
+  sendEmail,
+  sendSms,
+  resolveZuperApiBase,
+  availableSlots,
+  assignAndSchedule,
+  addZuperNote,
+  attachToZuper,
+  brandonEmail: BRANDON_EMAIL,
+  testUpload: upload
 });
 
 app.get('/admin/sunday', async (req, res) => {
