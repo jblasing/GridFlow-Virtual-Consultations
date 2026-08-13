@@ -171,6 +171,29 @@ function formatZuperDate(value) {
   return new Date(value).toISOString().slice(0, 19).replace('T', ' ');
 }
 
+function sameInstant(actual, expected) {
+  const actualTime = new Date(actual).getTime();
+  const expectedTime = new Date(expected).getTime();
+  return Number.isFinite(actualTime) && Math.abs(actualTime - expectedTime) < 1000;
+}
+
+function assignedUserUids(job) {
+  return (job?.assigned_to || [])
+    .map(user => typeof user === 'string' ? user : user?.user_uid)
+    .filter(Boolean);
+}
+
+function verifyZuperBooking(response, expectedStart, expectedEnd) {
+  const job = response?.data || response?.job || response;
+  if (!job || !assignedUserUids(job).includes(BRANDON_USER_UID)) {
+    throw new Error('Zuper did not confirm Brandon as an assigned user.');
+  }
+  if (!sameInstant(job.scheduled_start_time, expectedStart) ||
+      !sameInstant(job.scheduled_end_time, expectedEnd)) {
+    throw new Error('Zuper did not confirm the requested appointment time.');
+  }
+}
+
 async function availableSlots() {
   const now = new Date();
   const to = new Date(now.getTime() + (7 * 86400000));
@@ -253,16 +276,25 @@ async function assignAndSchedule(jobUid, start, end) {
     body: JSON.stringify({
       job: {
         job_uid: jobUid,
-        job_start: start,
-        job_end: end
+        scheduled_start_time: formatZuperDate(start),
+        scheduled_end_time: formatZuperDate(end),
+        job_timezone: TIME_ZONE
       }
     })
   });
+  const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
+  verifyZuperBooking(updated, start, end);
+  console.info('Zuper virtual consultation scheduled:', JSON.stringify({
+    job_uid: jobUid,
+    user_uid: BRANDON_USER_UID,
+    scheduled_start_time: start,
+    scheduled_end_time: end
+  }));
 }
 
 async function addZuperNote(jobUid, note) {
   try {
-    await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid) + '/notes', {
+    await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid) + '/note', {
       method: 'POST',
       body: JSON.stringify({ note: { note, is_private: false } })
     });
