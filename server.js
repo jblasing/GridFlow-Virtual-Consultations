@@ -4,7 +4,7 @@ const multer = require('multer');
 const { Pool } = require('pg');
 const { buildBookableSlots, SLOT_MINUTES, BUFFER_MINUTES } = require('./lib/schedule');
 const { mountTestConsole } = require('./lib/test-console');
-const { invitationHtml } = require('./lib/email-templates');
+const { invitationHtml, LOGO_URL } = require('./lib/email-templates');
 
 const app = express();
 const pool = new Pool({
@@ -351,8 +351,8 @@ function layout(title, body) {
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
     '<title>', htmlEscape(title), '</title>',
     '<link rel="stylesheet" href="/assets/styles.css"></head><body>',
-    '<header><div class="brand">Collaborative Services</div>',
-    '<div class="subbrand">Virtual Generator Consultation</div></header>',
+    '<header><img class="site-logo" src="', LOGO_URL, '" alt="Collaborative Services"><div><div class="brand">Collaborative Services</div>',
+    '<div class="subbrand">Virtual Generator Estimate</div></div></header>',
     '<main>', body, '</main>',
     '<footer>Collaborative Services · (936) 228-2916</footer>',
     '</body></html>'
@@ -404,12 +404,12 @@ async function createInvitation(lead, channels = { email: true, sms: true }) {
   const deliveries = [];
   if (channels.email) deliveries.push(sendEmail({
     to: stored.customer_email,
-    subject: 'Schedule your virtual whole-home generator consultation',
+    subject: 'Schedule Your Virtual Generator Estimate',
     html: invitationHtml(stored.customer_name, bookingUrl)
   }));
   if (channels.sms) deliveries.push(sendSms(
     stored.customer_phone,
-    'Collaborative Services: Schedule your virtual whole-home generator consultation with Brandon: ' + bookingUrl
+    'Collaborative Services: Schedule your virtual generator estimate: ' + bookingUrl
   ));
   const outcomes = await Promise.allSettled(deliveries);
   const failed = outcomes.find(item => item.status === 'rejected');
@@ -433,24 +433,34 @@ app.get('/book/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This booking link is unavailable.</h1></section>'));
   const slots = await availableSlots(lead.job_uid);
-  const options = slots.map(slot =>
-    '<option value="' + htmlEscape(slot.start) + '">' + htmlEscape(formatDate(slot.start)) + '</option>'
-  ).join('');
-  const current = lead.booking_status === 'booked'
-    ? '<div class="notice">Currently scheduled for <strong>' + htmlEscape(formatDate(lead.scheduled_start)) + '</strong>.</div>'
-    : '';
-  res.send(layout('Schedule consultation', [
-    '<section><p class="eyebrow">Whole-home generator consultation</p>',
-    '<h1>Choose a time with Brandon</h1>',
-    '<p>45-minute virtual consultation. Times shown in Central Time.</p>',
-    current,
-    '<form method="post" action="/book/', htmlEscape(req.params.token), '">',
-    '<label>Available appointment</label><select name="start" required>',
-    options || '<option value="">No appointments are currently available</option>',
-    '</select><button type="submit" ', options ? '' : 'disabled', '>Reserve appointment</button></form>',
-    lead.booking_status === 'booked'
-      ? '<form method="post" action="/book/' + htmlEscape(req.params.token) + '/cancel"><button class="secondary">Cancel appointment</button></form>'
-      : '',
+  const dates = new Map();
+  for (const slot of slots) {
+    const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(slot.start));
+    if (!dates.has(dateKey)) dates.set(dateKey, []);
+    dates.get(dateKey).push(slot);
+  }
+  const dateButtons = [...dates.entries()].map(([dateKey, daySlots], index) => {
+    const date = new Date(daySlots[0].start);
+    const weekday = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, weekday: 'short' }).format(date);
+    const month = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, month: 'short' }).format(date);
+    const day = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, day: 'numeric' }).format(date);
+    return '<button type="button" class="calendar-day ' + (index === 0 ? 'active' : '') + '" data-date="' + htmlEscape(dateKey) + '"><span>' + htmlEscape(weekday) + '</span><strong>' + htmlEscape(day) + '</strong><small>' + htmlEscape(month) + '</small></button>';
+  }).join('');
+  const timeGroups = [...dates.entries()].map(([dateKey, daySlots], index) => {
+    const times = daySlots.map((slot, slotIndex) => {
+      const time = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, hour: 'numeric', minute: '2-digit' }).format(new Date(slot.start));
+      return '<label class="time-choice"><input type="radio" name="start" value="' + htmlEscape(slot.start) + '" ' + (index === 0 && slotIndex === 0 ? 'checked' : '') + ' required><span>' + htmlEscape(time) + '</span></label>';
+    }).join('');
+    return '<div class="time-panel ' + (index === 0 ? 'active' : '') + '" data-date="' + htmlEscape(dateKey) + '">' + times + '</div>';
+  }).join('');
+  const current = lead.booking_status === 'booked' ? '<div class="notice">Currently scheduled for <strong>' + htmlEscape(formatDate(lead.scheduled_start)) + '</strong>.</div>' : '';
+  res.send(layout('Schedule virtual generator estimate', [
+    '<section class="calendar-card"><p class="eyebrow">Virtual generator estimate</p>',
+    '<h1>Schedule with Collaborative Services</h1>',
+    '<p>Choose a date and time for your 45-minute virtual estimate. Times shown in Central Time.</p>', current,
+    slots.length ? '<form method="post" action="/book/' + htmlEscape(req.params.token) + '"><div class="calendar-shell"><div class="calendar-heading"><strong>Select a date</strong><span>Next 7 days</span></div><div class="calendar-days">' + dateButtons + '</div><div class="calendar-heading"><strong>Select a time</strong><span>Central Time</span></div>' + timeGroups + '</div><button type="submit">Reserve virtual estimate</button></form>' : '<div class="notice">No appointments are currently available. Please check again or call (936) 228-2916.</div>',
+    lead.booking_status === 'booked' ? '<form method="post" action="/book/' + htmlEscape(req.params.token) + '/cancel"><button class="secondary">Cancel appointment</button></form>' : '',
+    '<script>document.querySelectorAll(".calendar-day").forEach(function(button){button.addEventListener("click",function(){document.querySelectorAll(".calendar-day,.time-panel").forEach(function(item){item.classList.remove("active")});button.classList.add("active");document.querySelector(".time-panel[data-date=\\\""+button.dataset.date+"\\\"]").classList.add("active")})})</script>',
     '</section>'
   ].join('')));
 });
@@ -476,10 +486,10 @@ app.post('/book/:token', async (req, res) => {
   await Promise.allSettled([
     sendEmail({
       to: lead.customer_email,
-      subject: 'Your virtual generator consultation is scheduled',
+      subject: 'Your virtual generator estimate is scheduled',
       html: '<h2>Your consultation is confirmed</h2><p>' + htmlEscape(formatDate(selected.start)) + '</p><p><a href="' + htmlEscape(checklist) + '">Complete the pre-consultation checklist</a></p><p><a href="' + htmlEscape(manage) + '">Reschedule or cancel</a></p>'
     }),
-    sendSms(lead.customer_phone, 'Your virtual generator consultation with Brandon is confirmed for ' + formatDate(selected.start) + '. Complete the checklist: ' + checklist),
+    sendSms(lead.customer_phone, 'Your virtual generator estimate with Collaborative Services is confirmed for ' + formatDate(selected.start) + '. Complete the checklist: ' + checklist),
     sendEmail({
       to: BRANDON_EMAIL,
       subject: 'New virtual generator consultation: ' + lead.customer_name,
