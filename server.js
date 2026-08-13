@@ -171,7 +171,7 @@ function formatZuperDate(value) {
   return new Date(value).toISOString().slice(0, 19).replace('T', ' ');
 }
 
-async function availableSlots(jobUid) {
+async function availableSlots() {
   const now = new Date();
   const to = new Date(now.getTime() + (7 * 86400000));
   let assistedSlots;
@@ -457,7 +457,7 @@ app.post('/api/invitations', async (req, res) => {
 app.get('/book/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This booking link is unavailable.</h1></section>'));
-  const slots = await availableSlots(lead.job_uid);
+  const slots = await availableSlots();
   const dates = new Map();
   for (const slot of slots) {
     const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(slot.start));
@@ -493,7 +493,7 @@ app.get('/book/:token', async (req, res) => {
 app.post('/book/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This booking link is unavailable.</h1></section>'));
-  const slots = await availableSlots(lead.job_uid);
+  const slots = await availableSlots();
   const selected = slots.find(slot => slot.start === req.body.start);
   if (!selected) {
     return res.status(409).send(layout('Time unavailable', '<section><h1>That appointment is no longer available.</h1><p>Please return to the booking page and choose another time.</p></section>'));
