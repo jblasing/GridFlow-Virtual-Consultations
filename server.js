@@ -287,56 +287,80 @@ async function assignAndSchedule(jobUid, start, end) {
   if (!currentJob?.job_title || !categoryUid) {
     throw new Error('Zuper did not return the job title and category required for rescheduling.');
   }
-  await zuperRequest('/api/jobs/assign', {
-    method: 'POST',
-    body: JSON.stringify({
-      job_uid: jobUid,
-      type: 'ASSIGN',
-      update_all_jobs: false,
-      notify_users: true,
-      users: [{
-        user_uid: BRANDON_USER_UID,
-        team_uid: BRANDON_TEAM_UID,
-        is_primary: true
-      }]
-    })
-  });
-  await zuperRequest('/api/jobs', {
-    method: 'PUT',
-    body: JSON.stringify({
-      job: {
-        job_uid: jobUid,
-        job_title: currentJob.job_title,
-        job_category: categoryUid,
-        scheduled_start_time: formatZuperDate(start),
-        scheduled_end_time: formatZuperDate(end),
-        job_timezone: TIME_ZONE,
-        appointment: {
-          appointment_title: 'Virtual Generator Estimate',
+  const baseJob = {
+    job_uid: jobUid,
+    job_title: currentJob.job_title,
+    job_category: categoryUid
+  };
+  const originalWindow = scheduledWindows(currentJob)[0];
+
+  try {
+    // Zuper will preserve an existing dispatch window unless it is explicitly
+    // cleared before a replacement schedule is submitted.
+    await zuperRequest('/api/jobs?clear_schedule=true', {
+      method: 'PUT',
+      body: JSON.stringify({ job: baseJob })
+    });
+    await zuperRequest('/api/jobs', {
+      method: 'PUT',
+      body: JSON.stringify({
+        job: {
+          ...baseJob,
           scheduled_start_time: formatZuperDate(start),
           scheduled_end_time: formatZuperDate(end),
-          users: [{
-            user_uid: BRANDON_USER_UID,
-            team_uid: BRANDON_TEAM_UID
-          }],
-          description: '45-minute virtual generator estimate'
+          job_timezone: TIME_ZONE
         }
+      })
+    });
+    await zuperRequest('/api/jobs/assign', {
+      method: 'POST',
+      body: JSON.stringify({
+        job_uid: jobUid,
+        type: 'ASSIGN',
+        update_all_jobs: false,
+        notify_users: true,
+        users: [{
+          user_uid: BRANDON_USER_UID,
+          team_uid: BRANDON_TEAM_UID,
+          is_primary: true
+        }]
+      })
+    });
+
+    let verificationError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 500));
+      const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
+      try {
+        verifyZuperBooking(updated, start, end);
+        verificationError = null;
+        break;
+      } catch (error) {
+        verificationError = error;
       }
-    })
-  });
-  let verificationError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 500));
-    const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
-    try {
-      verifyZuperBooking(updated, start, end);
-      verificationError = null;
-      break;
-    } catch (error) {
-      verificationError = error;
     }
+    if (verificationError) throw verificationError;
+  } catch (error) {
+    if (originalWindow) {
+      try {
+        await zuperRequest('/api/jobs', {
+          method: 'PUT',
+          body: JSON.stringify({
+            job: {
+              ...baseJob,
+              scheduled_start_time: formatZuperDate(originalWindow.start),
+              scheduled_end_time: formatZuperDate(originalWindow.end),
+              job_timezone: TIME_ZONE
+            }
+          })
+        });
+        console.warn('Restored original Zuper schedule after booking failure:', jobUid);
+      } catch (rollbackError) {
+        console.error('Could not restore original Zuper schedule:', rollbackError);
+      }
+    }
+    throw error;
   }
-  if (verificationError) throw verificationError;
   console.info('Zuper virtual consultation scheduled:', JSON.stringify({
     job_uid: jobUid,
     user_uid: BRANDON_USER_UID,
