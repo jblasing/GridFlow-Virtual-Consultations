@@ -557,29 +557,6 @@ async function sendEmail({ to, subject, html, attachments = [] }) {
   if (!response.ok) throw new Error('Email delivery failed: ' + response.status);
 }
 
-async function sendSms(to, body) {
-  const phone = String(to || '').replace(/\D/g, '');
-  if (!phone) return;
-  const account = required('TWILIO_ACCOUNT_SID');
-  const auth = Buffer.from(account + ':' + required('TWILIO_AUTH_TOKEN')).toString('base64');
-  const response = await fetch(
-    'https://api.twilio.com/2010-04-01/Accounts/' + account + '/Messages.json',
-    {
-      method: 'POST',
-      headers: {
-        authorization: 'Basic ' + auth,
-        'content-type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams({
-        To: phone.length === 10 ? '+1' + phone : '+' + phone,
-        From: required('TWILIO_FROM_NUMBER'),
-        Body: body
-      })
-    }
-  );
-  if (!response.ok) throw new Error('SMS delivery failed: ' + response.status);
-}
-
 function formatDate(value) {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: TIME_ZONE,
@@ -617,7 +594,7 @@ app.get('/health', async (_req, res) => {
   res.json({ status: 'ok', scheduling: true, checklist: true });
 });
 
-async function createInvitation(lead, channels = { email: true, sms: true }) {
+async function createInvitation(lead) {
   if (!lead.job_uid || !lead.customer_name) {
     const error = new Error('job_uid and customer_name are required');
     error.statusCode = 400;
@@ -644,19 +621,11 @@ async function createInvitation(lead, channels = { email: true, sms: true }) {
   );
   const stored = result.rows[0];
   const bookingUrl = publicBaseUrl() + '/book/' + signId(stored.id);
-  const deliveries = [];
-  if (channels.email) deliveries.push(sendEmail({
+  await sendEmail({
     to: stored.customer_email,
     subject: 'Schedule Your Virtual Generator Estimate',
     html: invitationHtml(stored.customer_name, bookingUrl)
-  }));
-  if (channels.sms) deliveries.push(sendSms(
-    stored.customer_phone,
-    'Collaborative Services: Schedule your virtual generator estimate: ' + bookingUrl
-  ));
-  const outcomes = await Promise.allSettled(deliveries);
-  const failed = outcomes.find(item => item.status === 'rejected');
-  if (failed) throw failed.reason;
+  });
   return { stored, bookingUrl };
 }
 
@@ -740,7 +709,6 @@ app.post('/book/:token', async (req, res) => {
       subject: 'Your virtual generator estimate is scheduled',
       html: confirmationHtml(lead.customer_name, formatDate(selected.start), checklist, manage)
     }),
-    sendSms(lead.customer_phone, 'Your virtual generator estimate with Collaborative Services is confirmed for ' + formatDate(selected.start) + '. Complete the checklist: ' + checklist),
     sendEmail({
       to: BRANDON_EMAIL,
       subject: 'New virtual generator consultation: ' + lead.customer_name,
@@ -760,7 +728,6 @@ app.post('/book/:token/cancel', async (req, res) => {
   );
   await Promise.allSettled([
     sendEmail({ to: lead.customer_email, subject: 'Virtual consultation cancelled', html: '<p>Your virtual generator consultation has been cancelled.</p>' }),
-    sendSms(lead.customer_phone, 'Your Collaborative Services virtual generator consultation has been cancelled.'),
     sendEmail({ to: BRANDON_EMAIL, subject: 'Virtual consultation cancelled: ' + lead.customer_name, html: '<p>The customer cancelled their virtual consultation.</p>' }),
     addZuperNote(lead.job_uid, 'Customer cancelled the virtual consultation.')
   ]);
@@ -843,7 +810,6 @@ mountTestConsole(app, {
   layout,
   graphToken,
   sendEmail,
-  sendSms,
   resolveZuperApiBase,
   availableSlots,
   assignAndSchedule,
@@ -852,7 +818,7 @@ mountTestConsole(app, {
   hostUpload,
   brandonEmail: BRANDON_EMAIL,
   testUpload: upload,
-  sendTestInvitation: lead => createInvitation(lead, { email: true, sms: false })
+  sendTestInvitation: lead => createInvitation(lead)
 });
 
 app.get('/admin/sunday', async (req, res) => {
