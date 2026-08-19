@@ -191,12 +191,21 @@ function sameInstant(actual, expected) {
   return Number.isFinite(actualTime) && Math.abs(actualTime - expectedTime) < 1000;
 }
 
+function assignedUsers(job) {
+  return (job?.assigned_to || [])
+    .map(assignment => ({
+      user_uid: typeof assignment === 'string'
+        ? assignment
+        : assignment?.user_uid || assignment?.user?.user_uid,
+      team_uid: typeof assignment === 'string'
+        ? null
+        : assignment?.team_uid || assignment?.team?.team_uid
+    }))
+    .filter(assignment => assignment.user_uid);
+}
+
 function assignedUserUids(job) {
-  return [...new Set((job?.assigned_to || [])
-    .map(assignment => typeof assignment === 'string'
-      ? assignment
-      : assignment?.user_uid || assignment?.user?.user_uid)
-    .filter(Boolean))];
+  return [...new Set(assignedUsers(job).map(assignment => assignment.user_uid))];
 }
 
 function scheduledWindows(job) {
@@ -306,8 +315,12 @@ async function assignAndSchedule(jobUid, start, end) {
     throw new Error('Zuper did not return the job title and category required for rescheduling.');
   }
   const originalWindow = scheduledWindows(currentJob)[0];
-  const otherAssignedUserUids = assignedUserUids(currentJob)
-    .filter(userUid => userUid !== BRANDON_USER_UID);
+  const otherAssignedUsers = assignedUsers(currentJob)
+    .filter(assignment => assignment.user_uid !== BRANDON_USER_UID);
+  const assignmentWithoutTeam = otherAssignedUsers.find(assignment => !assignment.team_uid);
+  if (assignmentWithoutTeam) {
+    throw new Error('Zuper did not return team context for assigned user ' + assignmentWithoutTeam.user_uid + '.');
+  }
   const appointmentUid = currentJob?.appointment?.appointment_uid
     || currentJob?.appointments?.[0]?.appointment_uid;
 
@@ -339,7 +352,7 @@ async function assignAndSchedule(jobUid, start, end) {
         }]
       })
     });
-    if (otherAssignedUserUids.length) {
+    if (otherAssignedUsers.length) {
       await zuperRequest('/api/jobs/assign', {
         method: 'POST',
         body: JSON.stringify({
@@ -347,8 +360,7 @@ async function assignAndSchedule(jobUid, start, end) {
           type: 'UNASSIGN',
           update_all_jobs: false,
           notify_users: false,
-          users: otherAssignedUserUids.map(userUid => ({ user_uid: userUid })),
-          teams: []
+          users: otherAssignedUsers
         })
       });
     }
@@ -395,7 +407,7 @@ async function assignAndSchedule(jobUid, start, end) {
   console.info('Zuper virtual consultation scheduled:', JSON.stringify({
     job_uid: jobUid,
     user_uid: BRANDON_USER_UID,
-    removed_user_uids: otherAssignedUserUids,
+    removed_user_uids: otherAssignedUsers.map(assignment => assignment.user_uid),
     scheduled_start_time: start,
     scheduled_end_time: end
   }));
