@@ -5,7 +5,7 @@ Customer self-scheduling and pre-consultation intake for whole-home generator le
 ## Initial workflow
 
 1. GridFlow posts a qualified lead to `POST /api/invitations`.
-2. The service sends a branded HTML email and SMS with a private booking link.
+2. The service sends a branded HTML email with a private booking link. Customer SMS is handled by the Zuper workflow.
 3. Zuper Assisted Scheduling supplies Brandon Whisnant's availability.
 4. The customer selects a 45-minute appointment within seven days.
 5. The existing Zuper Generator Sales Lead job is reassigned to Brandon and scheduled.
@@ -64,4 +64,4 @@ Send the shared CRM secret in the `x-gridflow-secret` header.
 
 ## Protected integration testing
 
-Open `/admin/tests?secret=ADMIN_SECRET` to test configuration, Microsoft Graph authentication, email, SMS, Zuper availability, checklist delivery, and assignment/scheduling independently. Tests that modify Zuper require an explicit test job UID and confirmation. Test outcomes are recorded in `virtual_consultation_test_runs`. Do not use a live customer job for destructive integration tests.
+Open `/admin/tests?secret=ADMIN_SECRET` to test configuration, Microsoft Graph authentication, email, Zuper availability, checklist delivery, and assignment/scheduling independently. Tests that modify Zuper require an explicit test job UID and confirmation. Test outcomes are recorded in `virtual_consultation_test_runs`. Do not use a live customer job for destructive integration tests.
