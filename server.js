@@ -192,11 +192,11 @@ function sameInstant(actual, expected) {
 }
 
 function assignedUserUids(job) {
-  return (job?.assigned_to || [])
+  return [...new Set((job?.assigned_to || [])
     .map(assignment => typeof assignment === 'string'
       ? assignment
       : assignment?.user_uid || assignment?.user?.user_uid)
-    .filter(Boolean);
+    .filter(Boolean))];
 }
 
 function scheduledWindows(job) {
@@ -215,8 +215,12 @@ function scheduledWindows(job) {
 
 function verifyZuperBooking(response, expectedStart, expectedEnd) {
   const job = response?.data || response?.job || response;
-  if (!job || !assignedUserUids(job).includes(BRANDON_USER_UID)) {
-    throw new Error('Zuper did not confirm Brandon as an assigned user.');
+  const userUids = assignedUserUids(job);
+  if (!job || userUids.length !== 1 || userUids[0] !== BRANDON_USER_UID) {
+    throw new Error('Zuper did not confirm Brandon as the only assigned user. ' + JSON.stringify({
+      assigned_user_uids: userUids,
+      expected_user_uid: BRANDON_USER_UID
+    }));
   }
   const windows = scheduledWindows(job);
   if (!windows.some(window =>
@@ -302,6 +306,8 @@ async function assignAndSchedule(jobUid, start, end) {
     throw new Error('Zuper did not return the job title and category required for rescheduling.');
   }
   const originalWindow = scheduledWindows(currentJob)[0];
+  const otherAssignedUserUids = assignedUserUids(currentJob)
+    .filter(userUid => userUid !== BRANDON_USER_UID);
   const appointmentUid = currentJob?.appointment?.appointment_uid
     || currentJob?.appointments?.[0]?.appointment_uid;
 
@@ -333,6 +339,18 @@ async function assignAndSchedule(jobUid, start, end) {
         }]
       })
     });
+    if (otherAssignedUserUids.length) {
+      await zuperRequest('/api/jobs/assign', {
+        method: 'POST',
+        body: JSON.stringify({
+          job_uid: jobUid,
+          type: 'UNASSIGN',
+          update_all_jobs: false,
+          notify_users: false,
+          users: otherAssignedUserUids.map(userUid => ({ user_uid: userUid }))
+        })
+      });
+    }
 
     let verificationError;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -376,6 +394,7 @@ async function assignAndSchedule(jobUid, start, end) {
   console.info('Zuper virtual consultation scheduled:', JSON.stringify({
     job_uid: jobUid,
     user_uid: BRANDON_USER_UID,
+    removed_user_uids: otherAssignedUserUids,
     scheduled_start_time: start,
     scheduled_end_time: end
   }));
