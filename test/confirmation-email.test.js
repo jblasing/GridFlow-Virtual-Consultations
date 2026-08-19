@@ -17,6 +17,9 @@ test('confirmation email matches the invitation brand and includes appointment a
   assert.ok(html.includes(LOGO_URL));
   assert.ok(html.includes('https://example.com/checklist/private'));
   assert.ok(html.includes('https://example.com/book/private'));
+  assert.match(html, /click here for the checklist/i);
+  assert.match(html, /click here to manage your appointment/i);
+  assert.doesNotMatch(html, />https:\/\//);
 });
 
 test('confirmation email escapes customer-controlled values', () => {
