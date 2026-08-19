@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const { buildBookableSlots, SLOT_MINUTES, BUFFER_MINUTES } = require('./lib/schedule');
 const { mountTestConsole } = require('./lib/test-console');
 const { invitationHtml, LOGO_URL } = require('./lib/email-templates');
+const { confirmationHtml } = require('./lib/confirmation-email');
 const { formatLocalDate, normalizeEmployeeConflicts } = require('./lib/zuper-schedule');
 
 const app = express();
@@ -737,7 +738,7 @@ app.post('/book/:token', async (req, res) => {
     sendEmail({
       to: lead.customer_email,
       subject: 'Your virtual generator estimate is scheduled',
-      html: '<h2>Your consultation is confirmed</h2><p>' + htmlEscape(formatDate(selected.start)) + '</p><p><a href="' + htmlEscape(checklist) + '">Complete the pre-consultation checklist</a></p><p><a href="' + htmlEscape(manage) + '">Reschedule or cancel</a></p>'
+      html: confirmationHtml(lead.customer_name, formatDate(selected.start), checklist, manage)
     }),
     sendSms(lead.customer_phone, 'Your virtual generator estimate with Collaborative Services is confirmed for ' + formatDate(selected.start) + '. Complete the checklist: ' + checklist),
     sendEmail({
