@@ -222,7 +222,7 @@ function scheduledWindows(job) {
   ].filter(window => window.start && window.end);
 }
 
-function verifyZuperBooking(response, expectedStart, expectedEnd) {
+function verifyZuperBooking(response, expectedStart, expectedEnd, expectedTitle = null) {
   const job = response?.data || response?.job || response;
   const userUids = assignedUserUids(job);
   if (!job || userUids.length !== 1 || userUids[0] !== BRANDON_USER_UID) {
@@ -239,6 +239,12 @@ function verifyZuperBooking(response, expectedStart, expectedEnd) {
       actual_windows: windows,
       expected_start: expectedStart,
       expected_end: expectedEnd
+    }));
+  }
+  if (expectedTitle && job.job_title !== expectedTitle) {
+    throw new Error('Zuper did not confirm the requested job title. ' + JSON.stringify({
+      actual_title: job.job_title,
+      expected_title: expectedTitle
     }));
   }
 }
@@ -305,7 +311,7 @@ async function availableSlots() {
   });
 }
 
-async function assignAndSchedule(jobUid, start, end) {
+async function assignAndSchedule(jobUid, start, end, customerName = '') {
   const currentResponse = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
   const currentJob = currentResponse?.data || currentResponse?.job || currentResponse;
   const categoryUid = typeof currentJob?.job_category === 'string'
@@ -315,6 +321,12 @@ async function assignAndSchedule(jobUid, start, end) {
     throw new Error('Zuper did not return the job title and category required for rescheduling.');
   }
   const originalWindow = scheduledWindows(currentJob)[0];
+  const originalTitle = currentJob.job_title;
+  const normalizedCustomerName = String(customerName || '').replace(/\s+/g, ' ').trim();
+  const expectedTitle = normalizedCustomerName
+    ? 'Virtual Estimate - ' + normalizedCustomerName
+    : null;
+  let titleUpdated = false;
   const otherAssignedUsers = assignedUsers(currentJob)
     .filter(assignment => assignment.user_uid !== BRANDON_USER_UID);
   const assignmentWithoutTeam = otherAssignedUsers.find(assignment => !assignment.team_uid);
@@ -364,13 +376,25 @@ async function assignAndSchedule(jobUid, start, end) {
         })
       });
     }
+    if (expectedTitle) {
+      await zuperRequest('/api/jobs?update_all_jobs=false', {
+        method: 'PUT',
+        body: JSON.stringify({
+          job: {
+            job_uid: jobUid,
+            job_title: expectedTitle
+          }
+        })
+      });
+      titleUpdated = true;
+    }
 
     let verificationError;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 500));
       const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
       try {
-        verifyZuperBooking(updated, start, end);
+        verifyZuperBooking(updated, start, end, expectedTitle);
         verificationError = null;
         break;
       } catch (error) {
@@ -379,6 +403,22 @@ async function assignAndSchedule(jobUid, start, end) {
     }
     if (verificationError) throw verificationError;
   } catch (error) {
+    if (titleUpdated && originalTitle) {
+      try {
+        await zuperRequest('/api/jobs?update_all_jobs=false', {
+          method: 'PUT',
+          body: JSON.stringify({
+            job: {
+              job_uid: jobUid,
+              job_title: originalTitle
+            }
+          })
+        });
+        console.warn('Restored original Zuper job title after booking failure:', jobUid);
+      } catch (titleRollbackError) {
+        console.error('Could not restore original Zuper job title:', titleRollbackError);
+      }
+    }
     if (originalWindow) {
       try {
         const originalMinutes = Math.max(1, Math.round(
@@ -407,6 +447,7 @@ async function assignAndSchedule(jobUid, start, end) {
   console.info('Zuper virtual consultation scheduled:', JSON.stringify({
     job_uid: jobUid,
     user_uid: BRANDON_USER_UID,
+    job_title: expectedTitle || originalTitle,
     removed_user_uids: otherAssignedUsers.map(assignment => assignment.user_uid),
     scheduled_start_time: start,
     scheduled_end_time: end
@@ -675,7 +716,7 @@ app.post('/book/:token', async (req, res) => {
     return res.status(409).send(layout('Time unavailable', '<section><h1>That appointment is no longer available.</h1><p>Please return to the booking page and choose another time.</p></section>'));
   }
   try {
-    await assignAndSchedule(lead.job_uid, selected.start, selected.end);
+    await assignAndSchedule(lead.job_uid, selected.start, selected.end, lead.customer_name);
   } catch (error) {
     console.error('Zuper booking update failed:', error);
     return res.status(502).send(layout(
