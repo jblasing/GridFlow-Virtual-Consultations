@@ -347,7 +347,8 @@ async function assignAndSchedule(jobUid, start, end) {
           type: 'UNASSIGN',
           update_all_jobs: false,
           notify_users: false,
-          users: otherAssignedUserUids.map(userUid => ({ user_uid: userUid }))
+          users: otherAssignedUserUids.map(userUid => ({ user_uid: userUid })),
+          teams: []
         })
       });
     }
