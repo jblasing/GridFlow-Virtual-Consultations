@@ -351,6 +351,20 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
         ...(appointmentUid ? { appointment_uid: appointmentUid } : {})
       })
     });
+    // Rename before assigning so Zuper's immediate assignment notification
+    // contains the customer-facing virtual-estimate title.
+    if (expectedTitle) {
+      await zuperRequest('/api/jobs?update_all_jobs=false', {
+        method: 'PUT',
+        body: JSON.stringify({
+          job: {
+            job_uid: jobUid,
+            job_title: expectedTitle
+          }
+        })
+      });
+      titleUpdated = true;
+    }
     await zuperRequest('/api/jobs/assign', {
       method: 'POST',
       body: JSON.stringify({
@@ -376,18 +390,6 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
           users: otherAssignedUsers
         })
       });
-    }
-    if (expectedTitle) {
-      await zuperRequest('/api/jobs?update_all_jobs=false', {
-        method: 'PUT',
-        body: JSON.stringify({
-          job: {
-            job_uid: jobUid,
-            job_title: expectedTitle
-          }
-        })
-      });
-      titleUpdated = true;
     }
 
     let verificationError;
