@@ -223,7 +223,13 @@ function scheduledWindows(job) {
   ].filter(window => window.start && window.end);
 }
 
-function verifyZuperBooking(response, expectedStart, expectedEnd, expectedTitle = null) {
+function verifyZuperBooking(
+  response,
+  expectedStart,
+  expectedEnd,
+  expectedTitle = null,
+  expectedDescription = undefined
+) {
   const job = response?.data || response?.job || response;
   const userUids = assignedUserUids(job);
   if (!job || userUids.length !== 1 || userUids[0] !== BRANDON_USER_UID) {
@@ -246,6 +252,12 @@ function verifyZuperBooking(response, expectedStart, expectedEnd, expectedTitle 
     throw new Error('Zuper did not confirm the requested job title. ' + JSON.stringify({
       actual_title: job.job_title,
       expected_title: expectedTitle
+    }));
+  }
+  if (expectedDescription !== undefined && job.job_description !== expectedDescription) {
+    throw new Error('Zuper did not preserve the original job description. ' + JSON.stringify({
+      expected_description: expectedDescription,
+      actual_description: job.job_description
     }));
   }
 }
@@ -323,6 +335,7 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
   }
   const originalWindow = scheduledWindows(currentJob)[0];
   const originalTitle = currentJob.job_title;
+  const originalDescription = currentJob.job_description;
   const normalizedCustomerName = String(customerName || '').replace(/\s+/g, ' ').trim();
   const expectedTitle = normalizedCustomerName
     ? 'Virtual Estimate - ' + normalizedCustomerName
@@ -351,6 +364,23 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
         ...(appointmentUid ? { appointment_uid: appointmentUid } : {})
       })
     });
+    // Rename before assigning so Zuper's immediate assignment notification
+    // contains the customer-facing virtual-estimate title.
+    if (expectedTitle) {
+      await zuperRequest('/api/jobs?update_all_jobs=false', {
+        method: 'PUT',
+        body: JSON.stringify({
+          job: {
+            job_uid: jobUid,
+            job_title: expectedTitle,
+            ...(originalDescription !== undefined
+              ? { job_description: originalDescription }
+              : {})
+          }
+        })
+      });
+      titleUpdated = true;
+    }
     await zuperRequest('/api/jobs/assign', {
       method: 'POST',
       body: JSON.stringify({
@@ -377,25 +407,13 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
         })
       });
     }
-    if (expectedTitle) {
-      await zuperRequest('/api/jobs?update_all_jobs=false', {
-        method: 'PUT',
-        body: JSON.stringify({
-          job: {
-            job_uid: jobUid,
-            job_title: expectedTitle
-          }
-        })
-      });
-      titleUpdated = true;
-    }
 
     let verificationError;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 500));
       const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
       try {
-        verifyZuperBooking(updated, start, end, expectedTitle);
+        verifyZuperBooking(updated, start, end, expectedTitle, originalDescription);
         verificationError = null;
         break;
       } catch (error) {
@@ -411,7 +429,10 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
           body: JSON.stringify({
             job: {
               job_uid: jobUid,
-              job_title: originalTitle
+              job_title: originalTitle,
+              ...(originalDescription !== undefined
+                ? { job_description: originalDescription }
+                : {})
             }
           })
         });
