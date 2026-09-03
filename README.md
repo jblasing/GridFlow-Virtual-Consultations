@@ -6,11 +6,11 @@ Customer self-scheduling and pre-consultation intake for whole-home generator le
 
 1. GridFlow posts a qualified lead to `POST /api/invitations`.
 2. The service sends a branded HTML email with a private booking link. Customer SMS is handled by the Zuper workflow.
-3. Zuper Assisted Scheduling supplies Brandon Whisnant's availability.
+3. Zuper supplies the assigned virtual-estimate specialist's availability. Colt-owned leads use Colt Minneci; all other leads use Brandon Whisnant.
 4. The customer selects a 45-minute appointment within seven days.
-5. The existing Zuper Generator Sales Lead job is reassigned to Brandon and scheduled.
+5. The existing Zuper Generator Sales Lead job is assigned to the selected specialist and scheduled.
 6. The customer completes the mobile pre-virtual checklist and uploads five photos.
-7. Checklist details and photos are emailed to Brandon and added to the Zuper job.
+7. Checklist details and photos are emailed to the selected specialist and added to the Zuper job.
 8. The private booking link supports rescheduling and cancellation.
 
 ## Booking rules
