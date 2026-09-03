@@ -7,6 +7,7 @@ const { mountTestConsole } = require('./lib/test-console');
 const { invitationHtml, LOGO_URL } = require('./lib/email-templates');
 const { confirmationHtml } = require('./lib/confirmation-email');
 const { formatLocalDate, normalizeEmployeeConflicts } = require('./lib/zuper-schedule');
+const { selectSpecialist } = require('./lib/specialist-routing');
 
 const app = express();
 const pool = new Pool({
@@ -24,9 +25,22 @@ const upload = multer({
 const PORT = Number(process.env.PORT || 10000);
 const TIME_ZONE = process.env.BOOKING_TIME_ZONE || 'America/Chicago';
 const BRANDON_USER_UID = process.env.BRANDON_ZUPER_USER_UID || 'b23bf97c-61c0-42fd-8bed-4687cb4c9fb8';
-const BRANDON_TEAM_UID = process.env.ZUPER_SALES_TEAM_UID || '6f2d5184-e739-4253-94db-da7be5f6ea8a';
+const COLT_USER_UID = process.env.COLT_ZUPER_USER_UID || '52a36205-a1d7-4e08-b2bc-99b8dd35dd3a';
+const SALES_TEAM_UID = process.env.ZUPER_SALES_TEAM_UID || '6f2d5184-e739-4253-94db-da7be5f6ea8a';
 const BRANDON_EMAIL = process.env.BRANDON_EMAIL || 'bwhisnant@csllc-tx.com';
-const BRANDON_NAME = 'Brandon Whisnant';
+const COLT_EMAIL = process.env.COLT_EMAIL || 'cminneci@csllc-tx.com';
+const DEFAULT_SPECIALIST = {
+  userUid: BRANDON_USER_UID,
+  teamUid: SALES_TEAM_UID,
+  email: BRANDON_EMAIL,
+  name: 'Brandon Whisnant'
+};
+const COLT_SPECIALIST = {
+  userUid: COLT_USER_UID,
+  teamUid: SALES_TEAM_UID,
+  email: COLT_EMAIL,
+  name: 'Colt Minneci'
+};
 const PHOTO_FIELDS = [
   'breakerPanel',
   'electricMeter',
@@ -96,9 +110,15 @@ async function ensureSchema() {
     ' scheduled_start TIMESTAMPTZ,',
     ' scheduled_end TIMESTAMPTZ,',
     ' checklist_submitted_at TIMESTAMPTZ,',
+    ' specialist_user_uid TEXT,',
+    ' specialist_name TEXT,',
+    ' specialist_email TEXT,',
     ' created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),',
     ' updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()',
     ');',
+    'ALTER TABLE virtual_consultation_leads ADD COLUMN IF NOT EXISTS specialist_user_uid TEXT;',
+    'ALTER TABLE virtual_consultation_leads ADD COLUMN IF NOT EXISTS specialist_name TEXT;',
+    'ALTER TABLE virtual_consultation_leads ADD COLUMN IF NOT EXISTS specialist_email TEXT;',
     'CREATE INDEX IF NOT EXISTS virtual_consultation_start_idx',
     ' ON virtual_consultation_leads (scheduled_start);',
     'CREATE TABLE IF NOT EXISTS virtual_consultation_settings (',
@@ -163,14 +183,14 @@ async function zuperRequest(path, options = {}) {
   return data;
 }
 
-function normalizeAvailability(data) {
+function normalizeAvailability(data, userUid) {
   const availability = data?.data?.availability || [];
   const windows = [];
   for (const day of availability) {
     for (const slot of day.slots || []) {
       const users = slot.users || [];
       const available = users.some(user =>
-        (typeof user === 'string' ? user : user.user_uid) === BRANDON_USER_UID
+        (typeof user === 'string' ? user : user.user_uid) === userUid
       );
       if (available) {
         const start = String(slot.start_time || '').replace(' ', 'T') + 'Z';
@@ -209,6 +229,29 @@ function assignedUserUids(job) {
   return [...new Set(assignedUsers(job).map(assignment => assignment.user_uid))];
 }
 
+function specialistForJob(job) {
+  return selectSpecialist(
+    assignedUserUids(job),
+    DEFAULT_SPECIALIST,
+    COLT_SPECIALIST
+  );
+}
+
+async function specialistForJobUid(jobUid) {
+  const response = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
+  return specialistForJob(response?.data || response?.job || response);
+}
+
+async function specialistForLead(lead) {
+  if (!lead?.specialist_user_uid) return specialistForJobUid(lead.job_uid);
+  return {
+    userUid: lead.specialist_user_uid,
+    teamUid: SALES_TEAM_UID,
+    email: lead.specialist_email,
+    name: lead.specialist_name
+  };
+}
+
 function scheduledWindows(job) {
   const appointments = [
     job?.appointment,
@@ -228,14 +271,15 @@ function verifyZuperBooking(
   expectedStart,
   expectedEnd,
   expectedTitle = null,
-  expectedDescription = undefined
+  expectedDescription = undefined,
+  expectedUserUid = BRANDON_USER_UID
 ) {
   const job = response?.data || response?.job || response;
   const userUids = assignedUserUids(job);
-  if (!job || userUids.length !== 1 || userUids[0] !== BRANDON_USER_UID) {
-    throw new Error('Zuper did not confirm Brandon as the only assigned user. ' + JSON.stringify({
+  if (!job || userUids.length !== 1 || userUids[0] !== expectedUserUid) {
+    throw new Error('Zuper did not confirm the virtual-estimate specialist as the only assigned user. ' + JSON.stringify({
       assigned_user_uids: userUids,
-      expected_user_uid: BRANDON_USER_UID
+      expected_user_uid: expectedUserUid
     }));
   }
   const windows = scheduledWindows(job);
@@ -262,7 +306,10 @@ function verifyZuperBooking(
   }
 }
 
-async function availableSlots() {
+async function availableSlots(jobUidOrSpecialist = null) {
+  const specialist = typeof jobUidOrSpecialist === 'string'
+    ? await specialistForJobUid(jobUidOrSpecialist)
+    : jobUidOrSpecialist || DEFAULT_SPECIALIST;
   const now = new Date();
   const to = new Date(now.getTime() + (7 * 86400000));
   let assistedSlots;
@@ -270,21 +317,21 @@ async function availableSlots() {
 
   try {
     const params = new URLSearchParams({
-      'filter.team_uid': BRANDON_TEAM_UID,
+      'filter.team_uid': specialist.teamUid,
       from_date: formatLocalDate(now, TIME_ZONE),
       to_date: formatLocalDate(to, TIME_ZONE),
       timezone: TIME_ZONE
     });
     const employeeSchedule = await zuperRequest('/api/jobs/employee/schedule?' + params.toString());
     const users = employeeSchedule?.data?.users;
-    if (!Array.isArray(users) || !users.some(user => user?.user_uid === BRANDON_USER_UID)) {
-      throw new Error('Brandon was not returned by the employee schedule.');
+    if (!Array.isArray(users) || !users.some(user => user?.user_uid === specialist.userUid)) {
+      throw new Error(specialist.name + ' was not returned by the employee schedule.');
     }
 
-    // The storefront owns the approved business hours. Zuper supplies Brandon's
+    // The storefront owns the approved business hours. Zuper supplies the specialist's
     // scheduled jobs and time off, which are removed as conflicts below.
     assistedSlots = [{ start: now.toISOString(), end: to.toISOString() }];
-    zuperConflicts = normalizeEmployeeConflicts(employeeSchedule, BRANDON_USER_UID);
+    zuperConflicts = normalizeEmployeeConflicts(employeeSchedule, specialist.userUid);
   } catch (error) {
     console.warn('Employee schedule unavailable; using assisted scheduling fallback:', error.message);
     const params = new URLSearchParams({
@@ -292,12 +339,12 @@ async function availableSlots() {
       to_date: formatZuperDate(to),
       job_duration: String(SLOT_MINUTES),
       timezone: TIME_ZONE,
-      team_uid: BRANDON_TEAM_UID,
-      user_uid: BRANDON_USER_UID,
+      team_uid: specialist.teamUid,
+      user_uid: specialist.userUid,
       consider_holidays: 'true'
     });
     const assisted = await zuperRequest('/api/assisted_scheduling?' + params.toString());
-    assistedSlots = normalizeAvailability(assisted);
+    assistedSlots = normalizeAvailability(assisted, specialist.userUid);
   }
 
   const busy = await pool.query(
@@ -306,9 +353,10 @@ async function availableSlots() {
       ' scheduled_end + ($1::int * INTERVAL \'1 minute\') AS "bufferedEnd"',
       ' FROM virtual_consultation_leads',
       ' WHERE booking_status = \'booked\'',
+      ' AND (specialist_user_uid = $2 OR ($2 = $3 AND specialist_user_uid IS NULL))',
       ' AND scheduled_start >= NOW() - INTERVAL \'1 day\''
     ].join(' '),
-    [BUFFER_MINUTES]
+    [BUFFER_MINUTES, specialist.userUid, BRANDON_USER_UID]
   );
   const sundayEnabled = (await setting('sunday_enabled', 'false')) === 'true';
   return buildBookableSlots({
@@ -324,9 +372,10 @@ async function availableSlots() {
   });
 }
 
-async function assignAndSchedule(jobUid, start, end, customerName = '') {
+async function assignAndSchedule(jobUid, start, end, customerName = '', requestedSpecialist = null) {
   const currentResponse = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
   const currentJob = currentResponse?.data || currentResponse?.job || currentResponse;
+  const specialist = requestedSpecialist || specialistForJob(currentJob);
   const categoryUid = typeof currentJob?.job_category === 'string'
     ? currentJob.job_category
     : currentJob?.job_category?.category_uid;
@@ -342,7 +391,7 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
     : null;
   let titleUpdated = false;
   const otherAssignedUsers = assignedUsers(currentJob)
-    .filter(assignment => assignment.user_uid !== BRANDON_USER_UID);
+    .filter(assignment => assignment.user_uid !== specialist.userUid);
   const assignmentWithoutTeam = otherAssignedUsers.find(assignment => !assignment.team_uid);
   if (assignmentWithoutTeam) {
     throw new Error('Zuper did not return team context for assigned user ' + assignmentWithoutTeam.user_uid + '.');
@@ -389,8 +438,8 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
         update_all_jobs: false,
         notify_users: true,
         users: [{
-          user_uid: BRANDON_USER_UID,
-          team_uid: BRANDON_TEAM_UID,
+          user_uid: specialist.userUid,
+          team_uid: specialist.teamUid,
           is_primary: true
         }]
       })
@@ -413,7 +462,14 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
       if (attempt > 1) await new Promise(resolve => setTimeout(resolve, 500));
       const updated = await zuperRequest('/api/jobs/' + encodeURIComponent(jobUid));
       try {
-        verifyZuperBooking(updated, start, end, expectedTitle, originalDescription);
+        verifyZuperBooking(
+          updated,
+          start,
+          end,
+          expectedTitle,
+          originalDescription,
+          specialist.userUid
+        );
         verificationError = null;
         break;
       } catch (error) {
@@ -468,12 +524,13 @@ async function assignAndSchedule(jobUid, start, end, customerName = '') {
   }
   console.info('Zuper virtual consultation scheduled:', JSON.stringify({
     job_uid: jobUid,
-    user_uid: BRANDON_USER_UID,
+    user_uid: specialist.userUid,
     job_title: expectedTitle || originalTitle,
     removed_user_uids: otherAssignedUsers.map(assignment => assignment.user_uid),
     scheduled_start_time: start,
     scheduled_end_time: end
   }));
+  return specialist;
 }
 
 async function addZuperNote(jobUid, note) {
@@ -621,14 +678,19 @@ async function createInvitation(lead) {
     error.statusCode = 400;
     throw error;
   }
+  const specialist = await specialistForJobUid(lead.job_uid);
   const result = await pool.query(
     [
       'INSERT INTO virtual_consultation_leads',
-      '(job_uid, customer_name, customer_email, customer_phone, home_address, source)',
-      'VALUES ($1,$2,$3,$4,$5,$6)',
+      '(job_uid, customer_name, customer_email, customer_phone, home_address, source,',
+      ' specialist_user_uid, specialist_name, specialist_email)',
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
       'ON CONFLICT (job_uid) DO UPDATE SET',
       'customer_email = COALESCE(EXCLUDED.customer_email, virtual_consultation_leads.customer_email),',
       'customer_phone = COALESCE(EXCLUDED.customer_phone, virtual_consultation_leads.customer_phone),',
+      'specialist_user_uid = EXCLUDED.specialist_user_uid,',
+      'specialist_name = EXCLUDED.specialist_name,',
+      'specialist_email = EXCLUDED.specialist_email,',
       'updated_at = NOW() RETURNING *'
     ].join(' '),
     [
@@ -637,7 +699,10 @@ async function createInvitation(lead) {
       lead.customer_email || '',
       lead.customer_phone || '',
       lead.home_address || '',
-      lead.source || ''
+      lead.source || '',
+      specialist.userUid,
+      specialist.name,
+      specialist.email
     ]
   );
   const stored = result.rows[0];
@@ -665,7 +730,7 @@ app.post('/api/invitations', async (req, res) => {
 app.get('/book/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This booking link is unavailable.</h1></section>'));
-  const slots = await availableSlots();
+  const slots = await availableSlots(await specialistForLead(lead));
   const dates = new Map();
   for (const slot of slots) {
     const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(slot.start));
@@ -701,13 +766,20 @@ app.get('/book/:token', async (req, res) => {
 app.post('/book/:token', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This booking link is unavailable.</h1></section>'));
-  const slots = await availableSlots();
+  const specialist = await specialistForLead(lead);
+  const slots = await availableSlots(specialist);
   const selected = slots.find(slot => slot.start === req.body.start);
   if (!selected) {
     return res.status(409).send(layout('Time unavailable', '<section><h1>That appointment is no longer available.</h1><p>Please return to the booking page and choose another time.</p></section>'));
   }
   try {
-    await assignAndSchedule(lead.job_uid, selected.start, selected.end, lead.customer_name);
+    await assignAndSchedule(
+      lead.job_uid,
+      selected.start,
+      selected.end,
+      lead.customer_name,
+      specialist
+    );
   } catch (error) {
     console.error('Zuper booking update failed:', error);
     return res.status(502).send(layout(
@@ -731,11 +803,11 @@ app.post('/book/:token', async (req, res) => {
       html: confirmationHtml(lead.customer_name, formatDate(selected.start), checklist, manage)
     }),
     sendEmail({
-      to: BRANDON_EMAIL,
+      to: specialist.email,
       subject: 'New virtual generator consultation: ' + lead.customer_name,
       html: '<h2>New virtual consultation</h2><p>' + htmlEscape(lead.customer_name) + '</p><p>' + htmlEscape(formatDate(selected.start)) + '</p><p>Zuper job: ' + htmlEscape(lead.job_uid) + '</p>'
     }),
-    addZuperNote(lead.job_uid, 'Customer scheduled a virtual consultation with ' + BRANDON_NAME + ' for ' + formatDate(selected.start) + '.')
+    addZuperNote(lead.job_uid, 'Customer scheduled a virtual consultation with ' + specialist.name + ' for ' + formatDate(selected.start) + '.')
   ]);
   res.send(layout('Appointment confirmed', '<section><h1>You are scheduled.</h1><p>' + htmlEscape(formatDate(selected.start)) + '</p><a class="button" href="' + htmlEscape(checklist) + '">Complete the pre-virtual checklist</a></section>'));
 });
@@ -743,13 +815,14 @@ app.post('/book/:token', async (req, res) => {
 app.post('/book/:token/cancel', async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This booking link is unavailable.</h1></section>'));
+  const specialist = await specialistForLead(lead);
   await pool.query(
     'UPDATE virtual_consultation_leads SET booking_status = \'cancelled\', scheduled_start = NULL, scheduled_end = NULL, updated_at = NOW() WHERE id = $1',
     [lead.id]
   );
   await Promise.allSettled([
     sendEmail({ to: lead.customer_email, subject: 'Virtual consultation cancelled', html: '<p>Your virtual generator consultation has been cancelled.</p>' }),
-    sendEmail({ to: BRANDON_EMAIL, subject: 'Virtual consultation cancelled: ' + lead.customer_name, html: '<p>The customer cancelled their virtual consultation.</p>' }),
+    sendEmail({ to: specialist.email, subject: 'Virtual consultation cancelled: ' + lead.customer_name, html: '<p>The customer cancelled their virtual consultation.</p>' }),
     addZuperNote(lead.job_uid, 'Customer cancelled the virtual consultation.')
   ]);
   res.send(layout('Appointment cancelled', '<section><h1>Your appointment has been cancelled.</h1><a class="button" href="/book/' + htmlEscape(req.params.token) + '">Schedule another time</a></section>'));
@@ -776,7 +849,7 @@ app.get('/checklist/:token', async (req, res) => {
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This checklist link is unavailable.</h1></section>'));
   res.send(layout('Pre-virtual checklist', [
     '<section><p class="eyebrow">Prepare for your consultation</p><h1>Pre-virtual checklist</h1>',
-    '<p>Take the photos from your phone. Clear, well-lit images help Brandon prepare.</p>',
+    '<p>Take the photos from your phone. Clear, well-lit images help your specialist prepare.</p>',
     '<form method="post" enctype="multipart/form-data" action="/checklist/', htmlEscape(req.params.token), '">',
     '<label>Confirm home address</label><input name="homeAddress" required value="', htmlEscape(lead.home_address), '">',
     '<label>Approximate house square footage</label><input name="squareFootage" type="number" min="200" max="50000" required>',
@@ -786,13 +859,14 @@ app.get('/checklist/:token', async (req, res) => {
     '<label>Gas meter and regulator, or propane tank(s)</label><input type="file" name="fuelSource" accept="image/*" capture="environment" required>',
     '<label>Desired generator location showing measurements, walls, windows, doors, vents and clearances</label><input type="file" name="locationDetail" accept="image/*" capture="environment" required>',
     '<label>Wide photo of the requested generator location</label><input type="file" name="locationWide" accept="image/*" capture="environment" required>',
-    '<button type="submit">Send checklist to Brandon</button></form></section>'
+    '<button type="submit">Send checklist</button></form></section>'
   ].join('')));
 });
 
 app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, maxCount: 1 }))), asyncHandler(async (req, res) => {
   const lead = await leadFromToken(req.params.token);
   if (!lead) return res.status(404).send(layout('Link unavailable', '<section><h1>This checklist link is unavailable.</h1></section>'));
+  const specialist = await specialistForLead(lead);
   const files = PHOTO_FIELDS.map(name => req.files?.[name]?.[0]).filter(Boolean);
   if (files.length !== PHOTO_FIELDS.length) {
     return res.status(400).send(layout('Photos required', '<section><h1>Please include all five requested photos.</h1></section>'));
@@ -813,7 +887,7 @@ app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, ma
   await Promise.allSettled([
     addZuperNote(lead.job_uid, summary),
     sendEmail({
-      to: BRANDON_EMAIL,
+      to: specialist.email,
       subject: 'Pre-virtual checklist: ' + lead.customer_name,
       html: '<h2>Pre-virtual checklist</h2><p><strong>Address:</strong> ' + htmlEscape(req.body.homeAddress) + '</p><p><strong>Square footage:</strong> ' + htmlEscape(req.body.squareFootage) + '</p><p><strong>Gas:</strong> ' + htmlEscape(req.body.gasType) + '</p><p>Zuper job: ' + htmlEscape(lead.job_uid) + '</p>',
       attachments: files
@@ -823,7 +897,7 @@ app.post('/checklist/:token', upload.fields(PHOTO_FIELDS.map(name => ({ name, ma
     'UPDATE virtual_consultation_leads SET home_address = $1, checklist_submitted_at = NOW(), updated_at = NOW() WHERE id = $2',
     [req.body.homeAddress, lead.id]
   );
-  res.send(layout('Checklist received', '<section><h1>Thank you—your checklist was sent to Brandon.</h1><p>He will review everything before your consultation.</p></section>'));
+  res.send(layout('Checklist received', '<section><h1>Thank you—your checklist was sent to your specialist.</h1><p>They will review everything before your consultation.</p></section>'));
 }));
 
 mountTestConsole(app, {
